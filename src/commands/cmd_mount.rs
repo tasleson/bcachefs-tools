@@ -124,6 +124,24 @@ fn get_devices_by_uuid(uuid: Uuid) -> anyhow::Result<Vec<(PathBuf, bch_sb_handle
     Ok(devs)
 }
 
+fn get_uuid_for_dev_node(device: &std::path::PathBuf) ->  anyhow::Result<Option<Uuid>> {
+    let mut udev = udev::Enumerator::new()?;
+    udev.match_subsystem("block")?;
+
+    for dev in udev.scan_devices()?.into_iter() {
+        if let Some(devnode) = dev.devnode() {
+            if devnode == device {
+                let devnode_owned = devnode.to_owned();
+                let sb_result = read_super_silent(&devnode_owned);
+                if let Ok(sb) = sb_result {
+                    return Ok(Some(sb.sb().uuid()));
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// Mount a bcachefs filesystem by its UUID.
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -184,6 +202,16 @@ fn devs_str_sbs_from_uuid(uuid: String) -> anyhow::Result<(String, Vec<bch_sb_ha
 
 }
 
+fn devs_str_sbs_from_device(device: &std::path::PathBuf) -> anyhow::Result<(String, Vec<bch_sb_handle>)> {
+    let uuid = get_uuid_for_dev_node(device)?;
+
+    if let Some(bcache_fs_uuid) = uuid {
+        devs_str_sbs_from_uuid(bcache_fs_uuid.to_string())
+    } else {
+        Ok((String::new(), Vec::new()))
+    }
+}
+
 fn cmd_mount_inner(opt: Cli) -> anyhow::Result<()> {
     let (devices, block_devices_to_mount) = if opt.dev.starts_with("UUID=") {
         let uuid = opt.dev.replacen("UUID=", "", 1);
@@ -192,14 +220,22 @@ fn cmd_mount_inner(opt: Cli) -> anyhow::Result<()> {
         let uuid = opt.dev.replacen("OLD_BLKID_UUID=", "", 1);
         devs_str_sbs_from_uuid(uuid)?
     } else {
-        let mut block_devices_to_mount = Vec::new();
+        // If the device string contains ":" we will assume the user knows the entire list.
+        // If they supply a single device it could be either the FS only has 1 device or it's
+        // only 1 of a number of devices which are part of the FS. This appears to be the case
+        // when we get called during fstab mount processing and the fstab specifies a UUID.
+        if opt.dev.contains(":") {
+            let mut block_devices_to_mount = Vec::new();
 
-        for dev in opt.dev.split(':') {
-            let dev = PathBuf::from(dev);
-            block_devices_to_mount.push(read_super_silent(&dev)?);
+            for dev in opt.dev.split(':') {
+                let dev = PathBuf::from(dev);
+                block_devices_to_mount.push(read_super_silent(&dev)?);
+            }
+
+            (opt.dev, block_devices_to_mount)
+        } else {
+            devs_str_sbs_from_device(&PathBuf::from(opt.dev))?
         }
-
-        (opt.dev, block_devices_to_mount)
     };
 
     if block_devices_to_mount.len() == 0 {
