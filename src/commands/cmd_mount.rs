@@ -124,7 +124,7 @@ fn get_devices_by_uuid(uuid: Uuid) -> anyhow::Result<Vec<(PathBuf, bch_sb_handle
     Ok(devs)
 }
 
-fn get_uuid_for_dev_node(device: &std::path::PathBuf) ->  anyhow::Result<Option<Uuid>> {
+fn get_uuid_for_dev_node(device: &std::path::PathBuf) ->  anyhow::Result<Uuid> {
     let mut udev = udev::Enumerator::new()?;
     udev.match_subsystem("block")?;
 
@@ -134,12 +134,12 @@ fn get_uuid_for_dev_node(device: &std::path::PathBuf) ->  anyhow::Result<Option<
                 let devnode_owned = devnode.to_owned();
                 let sb_result = read_super_silent(&devnode_owned);
                 if let Ok(sb) = sb_result {
-                    return Ok(Some(sb.sb().uuid()));
+                    return Ok(sb.sb().uuid());
                 }
             }
         }
     }
-    Ok(None)
+    Err(anyhow::anyhow!("Could not find specified device {}",device.display()))
 }
 
 /// Mount a bcachefs filesystem by its UUID.
@@ -203,13 +203,9 @@ fn devs_str_sbs_from_uuid(uuid: String) -> anyhow::Result<(String, Vec<bch_sb_ha
 }
 
 fn devs_str_sbs_from_device(device: &std::path::PathBuf) -> anyhow::Result<(String, Vec<bch_sb_handle>)> {
-    let uuid = get_uuid_for_dev_node(device)?;
+    let bcache_fs_uuid = get_uuid_for_dev_node(device)?;
 
-    if let Some(bcache_fs_uuid) = uuid {
-        devs_str_sbs_from_uuid(bcache_fs_uuid.to_string())
-    } else {
-        Ok((String::new(), Vec::new()))
-    }
+    devs_str_sbs_from_uuid(bcache_fs_uuid.to_string())
 }
 
 fn cmd_mount_inner(opt: Cli) -> anyhow::Result<()> {
